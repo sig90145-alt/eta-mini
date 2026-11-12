@@ -97,29 +97,24 @@ def test_eta_get_not_allowed(client):
 
 # ---------------------------------------------------------------------------
 # 비유한(non-finite) 숫자와 오버플로
-# 아래 세 테스트는 현재 앱의 알려진 버그를 기록한다. 앱을 고치면 strict xfail 이
+# 오버플로 테스트는 아직 고치지 않은 버그라 strict xfail 로 표시한다. 앱을 고치면
 # XPASS 로 실패하므로, 그때 xfail 표시를 지운다.
 # ---------------------------------------------------------------------------
 
 JSON_HEADERS = {"content-type": "application/json"}
 
 
-@pytest.mark.xfail(strict=True, reason="버그: NaN 을 422 로 거절하다가 오류 응답 직렬화에서 500")
-def test_eta_nan_is_422(raw_client):
-    """distance_km 가 NaN 이면 500 이 아니라 422 로 거절되는지 확인한다."""
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+def test_eta_non_finite_distance_is_422(raw_client, literal):
+    """distance_km 가 NaN·Infinity 면 500 이 아니라 422 로 거절되고 loc 에 표시되는지 확인한다."""
     res = raw_client.post(
-        "/eta", content='{"distance_km": NaN, "pending_orders": 0}', headers=JSON_HEADERS
+        "/eta",
+        content=f'{{"distance_km": {literal}, "pending_orders": 0}}',
+        headers=JSON_HEADERS,
     )
     assert res.status_code == 422
-
-
-@pytest.mark.xfail(strict=True, reason="버그: Infinity 가 ge=0 을 통과해 minutes=null 로 응답")
-def test_eta_infinity_is_422(client):
-    """distance_km 가 Infinity 이면 422 로 거절되는지 확인한다."""
-    res = client.post(
-        "/eta", content='{"distance_km": Infinity, "pending_orders": 0}', headers=JSON_HEADERS
-    )
-    assert res.status_code == 422
+    locs = [err["loc"] for err in res.json()["detail"]]
+    assert ["body", "distance_km"] in locs
 
 
 @pytest.mark.xfail(strict=True, reason="버그: 계산 결과가 inf 로 넘쳐 minutes=null 로 응답")
