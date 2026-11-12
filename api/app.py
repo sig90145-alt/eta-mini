@@ -3,7 +3,7 @@ import math
 import os
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -52,6 +52,20 @@ def health() -> dict[str, str]:
 @app.post("/eta", response_model=EtaResponse)
 def eta(req: EtaRequest) -> EtaResponse:
     """배달 예상 시간을 계산"""
-    minutes = estimate_delivery_minutes(req.distance_km, req.pending_orders)
+    try:
+        minutes = estimate_delivery_minutes(req.distance_km, req.pending_orders)
+    except OverflowError:
+        minutes = math.inf  # 아주 큰 정수를 float 로 바꾸다 넘친 경우
+    if not math.isfinite(minutes):
+        # 입력이 너무 커서 결과를 숫자로 표현할 수 없다. minutes=null 로 응답하지 않고 거절한다.
+        raise HTTPException(
+            status_code=422,
+            detail=[{
+                "type": "value_error",
+                "loc": ["body"],
+                "msg": "Input values are too large to estimate delivery time",
+                "input": _json_safe(jsonable_encoder(req)),
+            }],
+        )
     return EtaResponse(minutes=minutes, model=MODEL_IMPL)
 

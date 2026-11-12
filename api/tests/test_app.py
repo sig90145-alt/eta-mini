@@ -97,8 +97,6 @@ def test_eta_get_not_allowed(client):
 
 # ---------------------------------------------------------------------------
 # 비유한(non-finite) 숫자와 오버플로
-# 오버플로 테스트는 아직 고치지 않은 버그라 strict xfail 로 표시한다. 앱을 고치면
-# XPASS 로 실패하므로, 그때 xfail 표시를 지운다.
 # ---------------------------------------------------------------------------
 
 JSON_HEADERS = {"content-type": "application/json"}
@@ -117,15 +115,28 @@ def test_eta_non_finite_distance_is_422(raw_client, literal):
     assert ["body", "distance_km"] in locs
 
 
-@pytest.mark.xfail(strict=True, reason="버그: 계산 결과가 inf 로 넘쳐 minutes=null 로 응답")
-def test_eta_overflow_never_returns_null(client):
-    """계산이 넘칠 만큼 큰 입력은 422 로 거절되거나, 200 이면 minutes 가 유한한 숫자인지 확인한다."""
-    res = client.post("/eta", json={"distance_km": 1e308, "pending_orders": 0})
-    if res.status_code == 200:
-        minutes = res.json()["minutes"]
-        assert isinstance(minutes, (int, float)) and math.isfinite(minutes)
-    else:
-        assert res.status_code == 422
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"distance_km": 1e308, "pending_orders": 0},  # 계산 결과가 inf 로 넘침
+        {"distance_km": 1.7e308, "pending_orders": 10**308},  # 두 항을 더하다 넘침
+        {"distance_km": 0, "pending_orders": 10**400},  # 정수를 float 로 바꾸다 OverflowError
+    ],
+    ids=["distance-overflow", "sum-overflow", "int-too-large"],
+)
+def test_eta_overflow_is_422(raw_client, payload):
+    """계산이 넘칠 만큼 큰 입력은 500 이나 minutes=null 이 아니라 422 로 거절되는지 확인한다."""
+    res = raw_client.post("/eta", json=payload)
+    assert res.status_code == 422
+    assert ["body"] in [err["loc"] for err in res.json()["detail"]]
+
+
+def test_eta_largest_finite_result_is_200(client):
+    """넘치기 직전의 큰 입력은 거절되지 않고 유한한 minutes 를 돌려주는지 확인한다."""
+    res = client.post("/eta", json={"distance_km": 1e307, "pending_orders": 0})
+    assert res.status_code == 200
+    minutes = res.json()["minutes"]
+    assert isinstance(minutes, (int, float)) and math.isfinite(minutes)
 
 
 # ---------------------------------------------------------------------------
