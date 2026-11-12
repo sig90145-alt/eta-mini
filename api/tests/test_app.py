@@ -1,3 +1,9 @@
+import math
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 
@@ -87,3 +93,137 @@ def test_eta_missing_field_is_422(client, payload):
 def test_eta_get_not_allowed(client):
     """/eta 는 POST 전용이라 GET 은 405 인지 확인한다."""
     assert client.get("/eta").status_code == 405
+
+
+# ---------------------------------------------------------------------------
+# 비유한(non-finite) 숫자와 오버플로
+# 아래 세 테스트는 현재 앱의 알려진 버그를 기록한다. 앱을 고치면 strict xfail 이
+# XPASS 로 실패하므로, 그때 xfail 표시를 지운다.
+# ---------------------------------------------------------------------------
+
+JSON_HEADERS = {"content-type": "application/json"}
+
+
+@pytest.mark.xfail(strict=True, reason="버그: NaN 을 422 로 거절하다가 오류 응답 직렬화에서 500")
+def test_eta_nan_is_422(raw_client):
+    """distance_km 가 NaN 이면 500 이 아니라 422 로 거절되는지 확인한다."""
+    res = raw_client.post(
+        "/eta", content='{"distance_km": NaN, "pending_orders": 0}', headers=JSON_HEADERS
+    )
+    assert res.status_code == 422
+
+
+@pytest.mark.xfail(strict=True, reason="버그: Infinity 가 ge=0 을 통과해 minutes=null 로 응답")
+def test_eta_infinity_is_422(client):
+    """distance_km 가 Infinity 이면 422 로 거절되는지 확인한다."""
+    res = client.post(
+        "/eta", content='{"distance_km": Infinity, "pending_orders": 0}', headers=JSON_HEADERS
+    )
+    assert res.status_code == 422
+
+
+@pytest.mark.xfail(strict=True, reason="버그: 계산 결과가 inf 로 넘쳐 minutes=null 로 응답")
+def test_eta_overflow_never_returns_null(client):
+    """계산이 넘칠 만큼 큰 입력은 422 로 거절되거나, 200 이면 minutes 가 유한한 숫자인지 확인한다."""
+    res = client.post("/eta", json={"distance_km": 1e308, "pending_orders": 0})
+    if res.status_code == 200:
+        minutes = res.json()["minutes"]
+        assert isinstance(minutes, (int, float)) and math.isfinite(minutes)
+    else:
+        assert res.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# 느슨한(lax) 타입 변환: 현재 허용하는 입력을 계약으로 고정한다.
+# 정책을 바꿔 거절하기로 하면 이 테스트를 422 기대로 바꾼다.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ({"distance_km": "2.5", "pending_orders": "3"}, 23.5),  # 숫자 문자열
+        ({"distance_km": 1, "pending_orders": 1.0}, 15.0),  # 소수부가 0 인 float
+        ({"distance_km": True, "pending_orders": False}, 13.0),  # 불리언 → 1, 0
+        ({"distance_km": 1, "pending_orders": 1, "extra": 9}, 15.0),  # 모르는 필드 무시
+        ({"distance_km": -0.0, "pending_orders": 0}, 10.0),  # 음수 0 은 0 으로 취급
+    ],
+)
+def test_eta_lax_inputs_accepted(client, payload, expected):
+    """현재 허용하는 느슨한 입력이 200 과 기대값을 돌려주는지 확인한다."""
+    res = client.post("/eta", json=payload)
+    assert res.status_code == 200
+    assert res.json()["minutes"] == pytest.approx(expected)
+
+
+def test_eta_huge_int_pending_orders(client):
+    """아주 큰 정수 pending_orders 도 200 과 유한한 숫자를 돌려주는지 확인한다."""
+    res = client.post("/eta", json={"distance_km": 0, "pending_orders": 10**30})
+    assert res.status_code == 200
+    assert res.json()["minutes"] == pytest.approx(2e30)
+
+
+# ---------------------------------------------------------------------------
+# 요청 본문 형식 오류
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"content": "{bad", "headers": JSON_HEADERS},  # 깨진 JSON
+        {"json": [1, 2]},  # 객체가 아닌 JSON
+        {},  # 본문 없음
+        {
+            "content": '{"distance_km": 1, "pending_orders": 1}',
+            "headers": {"content-type": "text/plain"},
+        },  # JSON 이 아닌 Content-Type
+    ],
+    ids=["broken-json", "array-body", "no-body", "text-plain"],
+)
+def test_eta_malformed_body_is_422(client, kwargs):
+    """형식이 잘못된 요청 본문은 422 로 거절되는지 확인한다."""
+    assert client.post("/eta", **kwargs).status_code == 422
+
+
+def test_eta_reports_all_invalid_fields(client):
+    """두 필드가 모두 잘못되면 두 필드의 오류가 모두 보고되는지 확인한다."""
+    res = client.post("/eta", json={"distance_km": -1, "pending_orders": "many"})
+    assert res.status_code == 422
+    locs = [err["loc"] for err in res.json()["detail"]]
+    assert ["body", "distance_km"] in locs
+    assert ["body", "pending_orders"] in locs
+
+
+# ---------------------------------------------------------------------------
+# 라우팅과 설정
+# ---------------------------------------------------------------------------
+
+
+def test_health_post_not_allowed(client):
+    """/health 는 GET 전용이라 POST 는 405 인지 확인한다."""
+    assert client.post("/health").status_code == 405
+
+
+def test_unknown_path_is_404(client):
+    """정의되지 않은 경로는 404 인지 확인한다."""
+    assert client.get("/does-not-exist").status_code == 404
+
+
+def test_health_and_eta_report_same_model(client):
+    """/health 와 /eta 가 같은 구현체 이름을 보고하는지 확인한다."""
+    health_model = client.get("/health").json()["model"]
+    eta_model = client.post("/eta", json={"distance_km": 1, "pending_orders": 1}).json()["model"]
+    assert health_model == eta_model
+
+
+def test_unknown_model_impl_fails_at_import():
+    """MODEL_IMPL 이 없는 구현체를 가리키면 앱 import 가 ModuleNotFoundError 로 실패하는지 확인한다."""
+    root = Path(__file__).resolve().parents[2]
+    env = {**os.environ, "MODEL_IMPL": "does_not_exist"}
+    proc = subprocess.run(
+        [sys.executable, "-c", "import api.app"],
+        cwd=root, env=env, capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode != 0
+    assert "ModuleNotFoundError" in proc.stderr

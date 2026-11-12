@@ -12,3 +12,9 @@ from api.app import app
 @pytest.fixture
 def client() -> TestClient:
     return TestClient(app)
+
+
+@pytest.fixture
+def raw_client() -> TestClient:
+    """서버 예외를 다시 던지지 않고 500 응답으로 돌려주는 클라이언트."""
+    return TestClient(app, raise_server_exceptions=False)
