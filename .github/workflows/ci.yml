@@ -38,7 +38,9 @@ jobs:
           context: .
           file: api/Dockerfile
           push: true
-          build-args: MODEL_IMPL=rule
+          build-args: |
+            MODEL_IMPL=rule
+            APP_VERSION=${{ github.ref_name }}
           tags: |
             ${{ env.IMAGE }}/eta-api:${{ github.ref_name }}
             ${{ env.IMAGE }}/eta-api:latest

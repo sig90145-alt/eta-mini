@@ -233,3 +233,42 @@ def test_unknown_model_impl_fails_at_import():
     )
     assert proc.returncode != 0
     assert "ModuleNotFoundError" in proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# "/" 소개 페이지
+# ---------------------------------------------------------------------------
+
+
+def test_index_returns_html(client):
+    """/ 가 200 과 HTML 소개 페이지를 돌려주는지 확인한다."""
+    res = client.get("/")
+    assert res.status_code == 200
+    assert res.headers["content-type"].startswith("text/html")
+    assert "<html" in res.text
+    assert "delivery-eta API" in res.text
+
+
+def test_index_lists_endpoints_and_model(client):
+    """소개 페이지에 주요 엔드포인트와 현재 구현체 이름이 표시되는지 확인한다."""
+    text = client.get("/").text
+    for path in ("/health", "/eta", "/docs"):
+        assert path in text
+    assert "model rule" in text
+
+
+def test_index_has_no_unfilled_placeholders(client):
+    """소개 페이지에 채워지지 않은 {version}·{model} 자리표시자가 남지 않는지 확인한다."""
+    text = client.get("/").text
+    assert "{version}" not in text
+    assert "{model}" not in text
+
+
+def test_index_not_in_openapi(client):
+    """소개 페이지는 API 문서(OpenAPI)에 나오지 않는지 확인한다."""
+    assert "/" not in client.get("/openapi.json").json()["paths"]
+
+
+def test_index_post_not_allowed(client):
+    """/ 는 GET 전용이라 POST 는 405 인지 확인한다."""
+    assert client.post("/").status_code == 405
