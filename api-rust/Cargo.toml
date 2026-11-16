@@ -1,0 +1,24 @@
+[package]
+name = "eta-api-rust"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "api/app.py 와 같은 API 계약(POST /eta, GET /health)을 Rust 로 구현한 배달 예상 시간 서비스"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal"] }
+# preserve_order: 오류의 input 으로 돌려주는 요청 객체의 키 순서를 지킨다.
+# arbitrary_precision: 아주 큰 정수를 잘리지 않은 그대로 돌려준다 (파이썬 int 처럼).
+serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"] }
+# load-dynamic: ONNX Runtime 공유 라이브러리를 실행 중에 ORT_LIB 경로에서 연다.
+# 기본 기능(download-binaries 등)을 끄면 빌드할 때 런타임을 내려받지 않는다.
+# api-31: ort 가 요구하는 최소 ONNX Runtime API 버전. 이미지에 넣는 런타임(uv.lock)이 이보다 새로우면 된다.
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic", "api-31"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
+[profile.release]
+strip = true
+lto = "thin"
